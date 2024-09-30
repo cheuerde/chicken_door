@@ -6,6 +6,11 @@ import gpiod
 import threading
 from time import sleep
 import atexit
+from datetime import datetime, timedelta
+from astral import LocationInfo
+from astral.sun import sun
+import schedule
+import time
 
 app = Flask(__name__)
 
@@ -36,6 +41,11 @@ camera = None
 camera_device = 0
 holding_torque = True
 door_open_direction = 'CCW'  # Can be 'CW' or 'CCW'
+
+# Location settings for sunrise/sunset calculations
+latitude = 53.5396  # Example: Berlin latitude
+longitude = 10.004  # Example: Berlin longitude
+location = LocationInfo("Custom", "Region", "Timezone", latitude, longitude)
 
 # Pin assignments
 PIN_ASSIGNMENTS = {
@@ -158,6 +168,37 @@ def handle_button_presses():
             toggle_light()
             sleep(0.5)  # Debounce delay
         sleep(0.1)  # Small delay to prevent excessive CPU usage
+
+def get_sun_times():
+    s = sun(location.observer, date=datetime.now(), tzinfo=location.timezone)
+    return s['sunrise'], s['sunset']
+
+def open_door():
+    logging.info("Automatic door opening triggered")
+    if door_open_direction == 'CW':
+        rotate_motor(1, SPR, delay)
+    else:
+        rotate_motor(0, SPR, delay)
+
+def close_door():
+    logging.info("Automatic door closing triggered")
+    if door_open_direction == 'CW':
+        rotate_motor(0, SPR, delay)
+    else:
+        rotate_motor(1, SPR, delay)
+
+def schedule_door_events():
+    sunrise, sunset = get_sun_times()
+    
+    schedule.every().day.at(sunrise.strftime("%H:%M")).do(open_door)
+    schedule.every().day.at((sunset - timedelta(minutes=30)).strftime("%H:%M")).do(toggle_light)
+    schedule.every().day.at(sunset.strftime("%H:%M")).do(close_door)
+    schedule.every().day.at((sunset + timedelta(minutes=15)).strftime("%H:%M")).do(toggle_light)
+
+def run_scheduler():
+    while True:
+        schedule.run_pending()
+        time.sleep(60)  # Check every minute
 
 @app.route('/')
 def index():
@@ -299,6 +340,16 @@ def get_status():
         'door_open_direction': door_open_direction
     })
 
+@app.route('/scheduled_events')
+def scheduled_events():
+    sunrise, sunset = get_sun_times()
+    return jsonify({
+        'next_open': sunrise.strftime("%H:%M"),
+        'next_close': sunset.strftime("%H:%M"),
+        'next_light_on': (sunset - timedelta(minutes=30)).strftime("%H:%M"),
+        'next_light_off': (sunset + timedelta(minutes=15)).strftime("%H:%M")
+    })
+
 @atexit.register
 def cleanup_resources():
     logging.info("Cleaning up resources at exit.")
@@ -318,6 +369,10 @@ if __name__ == '__main__':
 
     button_thread = threading.Thread(target=handle_button_presses, daemon=True)
     button_thread.start()
+
+    schedule_door_events()
+    scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
+    scheduler_thread.start()
     
     logging.info("Starting Flask app.")
     app.run(host='0.0.0.0', port=5000, threaded=True)

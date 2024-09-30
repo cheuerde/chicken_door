@@ -145,6 +145,14 @@
                 {% endfor %}
             </div>
         </div>
+
+        <div class="section">
+            <h2>Scheduled Events</h2>
+            <p>Next door open: <span id="next-open"></span></p>
+            <p>Next door close: <span id="next-close"></span></p>
+            <p>Next light on: <span id="next-light-on"></span></p>
+            <p>Next light off: <span id="next-light-off"></span></p>
+        </div>
     </div>
     
     <div class="section">
@@ -213,6 +221,15 @@
         });
     }
     
+    function updateScheduledEvents() {
+        $.get('/scheduled_events', function(data) {
+            $('#next-open').text(data.next_open);
+            $('#next-close').text(data.next_close);
+            $('#next-light-on').text(data.next_light_on);
+            $('#next-light-off').text(data.next_light_off);
+        });
+    }
+    
     $(document).ready(function() {
         var inputsBeingEdited = {};
 
@@ -275,6 +292,7 @@
                 updateButtonsAndLevers(data);
             });
             fetchLogs();
+            updateScheduledEvents();
         }, 1000);
     });
 </script>

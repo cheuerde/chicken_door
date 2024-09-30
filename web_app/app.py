@@ -11,6 +11,7 @@ from astral import LocationInfo
 from astral.sun import sun
 import schedule
 import time
+from zoneinfo import ZoneInfo
 
 app = Flask(__name__)
 
@@ -45,7 +46,10 @@ door_open_direction = 'CCW'  # Can be 'CW' or 'CCW'
 # Location settings for sunrise/sunset calculations
 latitude = 53.5396  # Example: Berlin latitude
 longitude = 10.004  # Example: Berlin longitude
-location = LocationInfo("Custom", "Region", "Timezone", latitude, longitude)
+#location = LocationInfo("Custom", "Region", "Timezone", latitude, longitude)
+
+# Replace "Europe/Berlin" with your actual timezone
+location = LocationInfo("Custom", "Region", ZoneInfo("Europe/Berlin"), latitude, longitude)
 
 # Pin assignments
 PIN_ASSIGNMENTS = {
@@ -141,11 +145,17 @@ def rotate_motor(direction, steps, delay):
     set_holding_torque(True)
     logging.info(f"After rotation: Holding torque is {'enabled' if holding_torque else 'disabled'}, SLP pin state is {read_slp_state()}")
 
-def toggle_light():
+def set_light(state):
     global light_on
-    light_on = not light_on
-    light_line.set_value(1 if light_on else 0)
-    logging.info(f"Light turned {'on' if light_on else 'off'}")
+    if state != light_on:
+        light_on = state
+        light_line.set_value(1 if light_on else 0)
+        logging.info(f"Light turned {'on' if light_on else 'off'}")
+    else:
+        logging.info(f"Light is already {'on' if light_on else 'off'}")
+
+def toggle_light():
+    set_light(not light_on)
 
 def handle_button_presses():
     global stop_motor
@@ -187,13 +197,48 @@ def close_door():
     else:
         rotate_motor(1, SPR, delay)
 
-def schedule_door_events():
+def get_adjusted_sun_times():
     sunrise, sunset = get_sun_times()
+    adjusted_sunrise = sunrise - timedelta(minutes=20)
+    adjusted_sunset = sunset + timedelta(minutes=30)
+    return adjusted_sunrise, adjusted_sunset
+
+def schedule_door_events():
+    # Clear all existing schedules
+    schedule.clear()
+
+    sunrise, sunset = get_adjusted_sun_times()
     
     schedule.every().day.at(sunrise.strftime("%H:%M")).do(open_door)
-    schedule.every().day.at((sunset - timedelta(minutes=30)).strftime("%H:%M")).do(toggle_light)
+    schedule.every().day.at((sunset - timedelta(minutes=15)).strftime("%H:%M")).do(lambda: set_light(True))
     schedule.every().day.at(sunset.strftime("%H:%M")).do(close_door)
-    schedule.every().day.at((sunset + timedelta(minutes=15)).strftime("%H:%M")).do(toggle_light)
+    schedule.every().day.at((sunset + timedelta(minutes=15)).strftime("%H:%M")).do(lambda: set_light(False))
+
+    # Schedule this function to run again at midnight
+    schedule.every().day.at("00:01").do(schedule_door_events)
+
+    logging.info(f"Scheduled events: Open at {sunrise.strftime('%H:%M')}, Close at {sunset.strftime('%H:%M')}")
+
+def get_next_scheduled_times():
+    jobs = schedule.get_jobs()
+    times = {
+        'next_open': None,
+        'next_close': None,
+        'next_light_on': None,
+        'next_light_off': None
+    }
+    
+    for job in jobs:
+        if job.job_func.__name__ == 'open_door':
+            times['next_open'] = job.next_run.strftime("%H:%M")
+        elif job.job_func.__name__ == 'close_door':
+            times['next_close'] = job.next_run.strftime("%H:%M")
+        elif job.job_func.__name__ == '<lambda>' and 'set_light(True)' in str(job.job_func):
+            times['next_light_on'] = job.next_run.strftime("%H:%M")
+        elif job.job_func.__name__ == '<lambda>' and 'set_light(False)' in str(job.job_func):
+            times['next_light_off'] = job.next_run.strftime("%H:%M")
+    
+    return times
 
 def run_scheduler():
     while True:
@@ -343,10 +388,13 @@ def get_status():
 @app.route('/scheduled_events')
 def scheduled_events():
     sunrise, sunset = get_sun_times()
+    sunrise = sunrise - timedelta(minutes=20)
+    sunset = sunset + timedelta(minutes=30)
+    
     return jsonify({
         'next_open': sunrise.strftime("%H:%M"),
         'next_close': sunset.strftime("%H:%M"),
-        'next_light_on': (sunset - timedelta(minutes=30)).strftime("%H:%M"),
+        'next_light_on': (sunset - timedelta(minutes=15)).strftime("%H:%M"),
         'next_light_off': (sunset + timedelta(minutes=15)).strftime("%H:%M")
     })
 

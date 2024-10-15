@@ -11,18 +11,15 @@ from astral.sun import sun
 import schedule
 import time
 from zoneinfo import ZoneInfo
-import subprocess
-import queue
+from picamera2 import Picamera2
+import numpy as np
+import cv2
 
 app = Flask(__name__)
 
 # Define the log directory and file
 log_dir = os.path.expanduser("~/logs")
 log_file = os.path.join(log_dir, "motor_light_control.log")
-
-# Add these global variables
-frame_queue = queue.Queue(maxsize=30)
-frame_thread = None
 
 # Create the log directory if it doesn't exist
 os.makedirs(log_dir, exist_ok=True)
@@ -43,15 +40,8 @@ delay = 0.001  # Delay between steps
 light_on = False
 stop_motor = False
 camera_on = True
-camera_process = None
 holding_torque = True
 door_open_direction = 'CCW'  # Can be 'CW' or 'CCW'
-
-# Camera settings
-camera_width = 320
-camera_height = 240
-camera_framerate = 10
-camera_quality = 30
 
 # Location settings for sunrise/sunset calculations
 latitude = 53.5396  # Example: Berlin latitude
@@ -73,7 +63,7 @@ PIN_ASSIGNMENTS = {
 }
 
 # Initialize the chip and lines
-chip = gpiod.Chip('gpiochip0')  # Changed from 'gpiochip4' to 'gpiochip0'
+chip = gpiod.Chip('gpiochip4')
 dir_line = chip.get_line(PIN_ASSIGNMENTS['DIR_PIN'])
 step_line = chip.get_line(PIN_ASSIGNMENTS['STEP_PIN'])
 slp_line = chip.get_line(PIN_ASSIGNMENTS['SLP_PIN'])
@@ -84,9 +74,6 @@ btn_stop_line = chip.get_line(PIN_ASSIGNMENTS['BTN_STOP_PIN'])
 btn_light_line = chip.get_line(PIN_ASSIGNMENTS['BTN_LIGHT_PIN'])
 lever_cw_line = chip.get_line(PIN_ASSIGNMENTS['LEVER_CW_PIN'])
 lever_ccw_line = chip.get_line(PIN_ASSIGNMENTS['LEVER_CCW_PIN'])
-
-# FIFO for camera stream
-fifo_path = '/tmp/camera_stream'
 
 def cleanup():
     logging.info("Cleaning up GPIO lines and resources...")
@@ -255,99 +242,10 @@ def run_scheduler():
         schedule.run_pending()
         time.sleep(60)  # Check every minute
 
-def start_camera_stream():
-    global camera_process, frame_thread
-    if not os.path.exists(fifo_path):
-        os.mkfifo(fifo_path)
-    
-    cmd = [
-        'libcamera-vid',
-        '-t', '0',
-        '-o', fifo_path,
-        '--inline',
-        '--width', str(camera_width),
-        '--height', str(camera_height),
-        '--framerate', str(camera_framerate),
-        '--codec', 'mjpeg',
-        '--quality', str(camera_quality)
-    ]
-    camera_process = subprocess.Popen(cmd)
-    
-    frame_thread = threading.Thread(target=read_frames)
-    frame_thread.daemon = True
-    frame_thread.start()
-    
-    logging.info("Camera stream started.")
-
-def stop_camera_stream():
-    global camera_process, frame_thread, camera_on
-    camera_on = False
-    if frame_thread:
-        frame_thread.join()
-    if camera_process:
-        camera_process.terminate()
-        camera_process.wait()
-        camera_process = None
-    logging.info("Camera stream stopped.")
-
-def read_frames():
-    global camera_on
-    with open(fifo_path, 'rb') as fifo:
-        while camera_on:
-            try:
-                # Read JPEG start marker
-                while fifo.read(2) != b'\xff\xd8':
-                    if not camera_on:
-                        return
-                    pass
-                
-                # Read until JPEG end marker
-                jpeg = b'\xff\xd8'
-                while True:
-                    byte = fifo.read(1)
-                    if not byte:
-                        break
-                    jpeg += byte
-                    if jpeg[-2:] == b'\xff\xd9':
-                        break
-                    if not camera_on:
-                        return
-                
-                # Put frame in queue, remove oldest if full
-                if frame_queue.full():
-                    try:
-                        frame_queue.get_nowait()
-                    except queue.Empty:
-                        pass
-                frame_queue.put(jpeg)
-            except Exception as e:
-                logging.error(f"Error reading frame: {str(e)}")
-                if not camera_on:
-                    return
-                sleep(0.1)
-
-def gen_frames():
-    while True:
-        if not camera_on:
-            sleep(0.1)
-            continue
-        try:
-            frame = frame_queue.get(timeout=1)
-            yield (b'--frame\r\n'
-                   b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
-        except queue.Empty:
-            continue
-        except Exception as e:
-            logging.error(f"Error in gen_frames: {str(e)}")
-            sleep(0.1)
-
 @app.route('/')
 def index():
     logging.info("Accessed index page.")
-    return render_template('index.html', spr=SPR, delay=delay, pin_assignments=PIN_ASSIGNMENTS, 
-                           door_open_direction=door_open_direction, camera_width=camera_width, 
-                           camera_height=camera_height, camera_framerate=camera_framerate, 
-                           camera_quality=camera_quality)
+    return render_template('index.html', spr=SPR, delay=delay, pin_assignments=PIN_ASSIGNMENTS, door_open_direction=door_open_direction)
 
 @app.route('/control/<action>')
 def control(action):
@@ -420,6 +318,27 @@ def view_logs():
     else:
         return "Log file not found", 404
 
+def gen_frames():
+    logging.info("Starting frame generation.")
+    camera = Picamera2()
+    camera.configure(camera.create_preview_configuration(main={"format": 'XRGB8888', "size": (640, 480)}))
+    camera.start()
+    try:
+        while camera_on:
+            frame = camera.capture_array()
+            ret, buffer = cv2.imencode('.jpg', frame)
+            if ret:
+                frame_bytes = buffer.tobytes()
+                yield (b'--frame\r\n'
+                       b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+            else:
+                logging.error("Failed to encode frame.")
+            # Optional: Add a small sleep if CPU usage is high
+            # time.sleep(0.01)
+    finally:
+        camera.stop()
+        logging.info("Camera stopped.")
+
 @app.route('/video_feed')
 def video_feed():
     logging.info("Accessed video feed.")
@@ -429,34 +348,15 @@ def video_feed():
 @app.route('/toggle_camera')
 def toggle_camera():
     global camera_on
-    if camera_on:
-        stop_camera_stream()
-    else:
-        camera_on = True
-        start_camera_stream()
+    camera_on = not camera_on
     logging.info(f"Camera turned {'on' if camera_on else 'off'}")
     return redirect(url_for('index'))
 
-@app.route('/update_camera_settings', methods=['POST'])
-def update_camera_settings():
-    global camera_width, camera_height, camera_framerate, camera_quality, camera_on
-    data = request.json
-    camera_width = int(data.get('width', camera_width))
-    camera_height = int(data.get('height', camera_height))
-    camera_framerate = int(data.get('framerate', camera_framerate))
-    camera_quality = int(data.get('quality', camera_quality))
-    logging.info(f"Updated camera settings: {camera_width}x{camera_height}, {camera_framerate}fps, quality {camera_quality}")
-    
-    was_camera_on = camera_on
-    if camera_on:
-        stop_camera_stream()
-    
-    if was_camera_on:
-        camera_on = True
-        start_camera_stream()
-    
-    return jsonify({'message': 'Camera settings updated', 'camera_on': camera_on})
-
+@app.route('/set_camera_device', methods=['POST'])
+def set_camera_device():
+    # Since Picamera2 works with the Pi Camera, there's no device index to set
+    logging.info("Camera device setting is not applicable for PiCamera2.")
+    return redirect(url_for('index'))
 
 @app.route('/get_status')
 def get_status():
@@ -466,10 +366,6 @@ def get_status():
         'delay': delay,
         'light_on': light_on,
         'camera_on': camera_on,
-        'camera_width': camera_width,
-        'camera_height': camera_height,
-        'camera_framerate': camera_framerate,
-        'camera_quality': camera_quality,
         'pin_assignments': PIN_ASSIGNMENTS,
         'holding_torque': holding_torque,
         'lever_cw_pressed': lever_cw_line.get_value() == 0,
@@ -479,15 +375,22 @@ def get_status():
 
 @app.route('/scheduled_events')
 def scheduled_events():
-    return jsonify(get_next_scheduled_times())
+    sunrise, sunset = get_sun_times()
+    sunrise = sunrise - timedelta(minutes=20)
+    sunset = sunset + timedelta(minutes=30)
+    
+    return jsonify({
+        'next_open': sunrise.strftime("%H:%M"),
+        'next_close': sunset.strftime("%H:%M"),
+        'next_light_on': (sunset - timedelta(minutes=15)).strftime("%H:%M"),
+        'next_light_off': (sunset + timedelta(minutes=15)).strftime("%H:%M")
+    })
 
 @atexit.register
 def cleanup_resources():
     logging.info("Cleaning up resources at exit.")
     cleanup()
-    stop_camera_stream()
-    if os.path.exists(fifo_path):
-        os.remove(fifo_path)
+    # No need to stop the camera here, as it's handled in gen_frames()
 
 if __name__ == '__main__':
     logging.info(f"Starting application with door open direction: {door_open_direction}")
@@ -506,9 +409,5 @@ if __name__ == '__main__':
     scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
     scheduler_thread.start()
 
-    if camera_on:
-        start_camera_stream()
-    
     logging.info("Starting Flask app.")
     app.run(host='0.0.0.0', port=5000, threaded=True)
-

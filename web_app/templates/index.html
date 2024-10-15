@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -13,22 +14,27 @@
             padding: 20px;
             background-color: #f0f0f0;
         }
+
         .container {
             display: flex;
             flex-wrap: wrap;
             gap: 20px;
         }
+
         .section {
             background-color: white;
             border-radius: 8px;
             padding: 20px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
             flex: 1;
             min-width: 300px;
         }
-        h1, h2 {
+
+        h1,
+        h2 {
             color: #333;
         }
+
         button {
             background-color: #4CAF50;
             border: none;
@@ -42,14 +48,18 @@
             cursor: pointer;
             border-radius: 4px;
         }
+
         button:active {
             background-color: #45a049;
         }
-        input[type="text"] {
+
+        input[type="text"],
+        input[type="number"] {
             width: 100px;
             padding: 5px;
             margin: 5px 0;
         }
+
         #log {
             height: 200px;
             overflow-y: auto;
@@ -57,6 +67,7 @@
             padding: 10px;
             background-color: #fff;
         }
+
         .button-state {
             display: inline-block;
             width: 10px;
@@ -65,17 +76,21 @@
             margin-right: 5px;
             background-color: #ccc;
         }
+
         .active {
             background-color: #4CAF50;
         }
+
         .lever-indicators {
             margin-top: 20px;
         }
+
         .lever-indicator {
             display: flex;
             align-items: center;
             margin-bottom: 10px;
         }
+
         .lever-state {
             display: inline-block;
             width: 20px;
@@ -84,17 +99,35 @@
             margin-right: 10px;
             background-color: #ccc;
         }
+
         .lever-state.open {
             background-color: #4CAF50;
         }
+
         .lever-state.closed {
             background-color: #ff0000;
         }
+
+        #camera-controls {
+            margin-top: 20px;
+        }
+
+        #camera-settings-form {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            align-items: center;
+        }
+
+        #camera-settings-form input[type="number"] {
+            width: 60px;
+        }
     </style>
 </head>
+
 <body>
     <h1>Raspberry Pi Control Panel</h1>
-    
+
     <div class="container">
         <div class="section">
             <h2>Motor Control</h2>
@@ -112,21 +145,33 @@
                 </div>
             </div>
         </div>
-        
+
         <div class="section">
             <h2>Light Control</h2>
             <button id="toggle_light"><span class="button-state"></span>Toggle Light</button>
-            <button id="toggle_camera"><span class="button-state"></span>Toggle Camera</button>
-            <form id="camera-device-form" action="/set_camera_device" method="post">
-                <select name="device" id="camera-device">
-                    <option value="0">Camera 0</option>
-                    <option value="1">Camera 1</option>
-                    <option value="2">Camera 2</option>
-                </select>
-                <button type="submit">Set Camera Device</button>
-            </form>
         </div>
-        
+
+        <div class="section">
+            <h2>Camera Control</h2>
+            <button id="toggle_camera"><span class="button-state"></span>Toggle Camera</button>
+            <div id="camera-controls">
+                <img id="video-feed" src="{{ url_for('video_feed') }}" width="{{ camera_width }}"
+                    height="{{ camera_height }}" style="display: none;">
+                <form id="camera-settings-form">
+                    <label for="camera-width">Width:</label>
+                    <input type="number" id="camera-width" name="width" value="{{ camera_width }}">
+                    <label for="camera-height">Height:</label>
+                    <input type="number" id="camera-height" name="height" value="{{ camera_height }}">
+                    <label for="camera-framerate">Framerate:</label>
+                    <input type="number" id="camera-framerate" name="framerate" value="{{ camera_framerate }}">
+                    <label for="camera-quality">Quality (1-100):</label>
+                    <input type="number" id="camera-quality" name="quality" value="{{ camera_quality }}" min="1"
+                        max="100">
+                    <button type="submit">Update Camera Settings</button>
+                </form>
+            </div>
+        </div>
+
         <div class="section">
             <h2>Variables</h2>
             <label for="spr">Steps per Revolution:</label>
@@ -135,7 +180,7 @@
             <input type="text" id="delay" value="{{ delay }}"><br>
             <button id="save_variables">Save Variables</button>
         </div>
-        
+
         <div class="section">
             <h2>Pin Assignments</h2>
             <div id="pin-assignments">
@@ -154,147 +199,172 @@
             <p>Next light off: <span id="next-light-off"></span></p>
         </div>
     </div>
-    
-    <div class="section">
-        <h2>Webcam Feed</h2>
-        <img id="webcam-feed" src="{{ url_for('video_feed') }}" width="640" height="480" style="display: none;">
-        <p id="camera-status">Camera is off</p>
-    </div>
-    
+
     <div class="section">
         <h2>Log</h2>
         <div id="log"></div>
     </div>
-<script>
-    function logMessage(message) {
-        var log = $('#log');
-        log.append(message + '<br>');
-        log.scrollTop(log[0].scrollHeight);
-    }
-    
-    function fetchLogs() {
-        $.get('/logs', function(data) {
-            $('#log').html('<pre>' + data + '</pre>');
-        });
-    }
-    
-    function control(action) {
-        $.get('/control/' + action, function() {
-            logMessage(action + ' command sent');
-            $('.button-state').removeClass('active');
-            $('#' + action + ' .button-state').addClass('active');
-            if (action === 'stop') {
-                setTimeout(function() {
-                    $('.button-state').removeClass('active');
-                }, 1000);
-            }
-        });
-    }
-
-    function updateVariables() {
-        var spr = $('#spr').val();
-        var delay = $('#delay').val();
-        $.ajax({
-            url: '/update_variables',
-            type: 'POST',
-            contentType: 'application/json',
-            data: JSON.stringify({spr: spr, delay: delay}),
-            success: function(response) {
-                logMessage('Variables updated - SPR: ' + spr + ', Delay: ' + delay);
-            }
-        });
-    }
-
-    function updatePins() {
-        var pinAssignments = {};
-        $('#pin-assignments input').each(function() {
-            pinAssignments[this.id] = parseInt($(this).val());
-        });
-        $.ajax({
-            url: '/update_pins',
-            type: 'POST',
-            contentType: 'application/json',
-            data: JSON.stringify(pinAssignments),
-            success: function(response) {
-                logMessage('Pin assignments updated');
-            }
-        });
-    }
-    
-    function updateScheduledEvents() {
-        $.get('/scheduled_events', function(data) {
-            $('#next-open').text(data.next_open);
-            $('#next-close').text(data.next_close);
-            $('#next-light-on').text(data.next_light_on);
-            $('#next-light-off').text(data.next_light_off);
-        });
-    }
-    
-    $(document).ready(function() {
-        var inputsBeingEdited = {};
-
-        $('#cw, #ccw, #stop, #toggle_light').click(function() {
-            control(this.id);
-        });
-        
-        $('#toggle_camera').click(function() {
-            $.get('/toggle_camera', function() {
-                logMessage('Camera toggle command sent');
-            });
-        });
-
-        $('#save_variables').click(updateVariables);
-        
-        $('#pin-assignments input').change(updatePins);
-
-        $('input[type="text"]').focus(function() {
-            inputsBeingEdited[this.id] = true;
-        }).blur(function() {
-            inputsBeingEdited[this.id] = false;
-        });
-        
-        function updateButtonsAndLevers(data) {
-            var openDirection = data.door_open_direction;
-            var closeDirection = openDirection === 'CW' ? 'CCW' : 'CW';
-            
-            $('#cw-label').text(openDirection === 'CW' ? 'OPEN (CW)' : 'CLOSE (CW)');
-            $('#ccw-label').text(openDirection === 'CCW' ? 'OPEN (CCW)' : 'CLOSE (CCW)');
-            
-            $('#lever-cw-label').text(openDirection === 'CW' ? 'OPEN (CW)' : 'CLOSE (CW)');
-            $('#lever-ccw-label').text(openDirection === 'CCW' ? 'OPEN (CCW)' : 'CLOSE (CCW)');
-            
-            var cwPressed = data.lever_cw_pressed;
-            var ccwPressed = data.lever_ccw_pressed;
-            
-            $('#lever-cw').toggleClass('open', openDirection === 'CW' && cwPressed)
-                          .toggleClass('closed', openDirection === 'CCW' && cwPressed);
-            $('#lever-ccw').toggleClass('open', openDirection === 'CCW' && ccwPressed)
-                           .toggleClass('closed', openDirection === 'CW' && ccwPressed);
+    <script>
+        function logMessage(message) {
+            var log = $('#log');
+            log.append(message + '<br>');
+            log.scrollTop(log[0].scrollHeight);
         }
 
-        setInterval(function() {
-            $.get('/get_status', function(data) {
-                if (!inputsBeingEdited['spr']) $('#spr').val(data.spr);
-                if (!inputsBeingEdited['delay']) $('#delay').val(data.delay);
-                $('#toggle_light .button-state').toggleClass('active', data.light_on);
-                $('#toggle_camera .button-state').toggleClass('active', data.camera_on);
-                $('#camera-device').val(data.camera_device);
-                if (data.camera_on) {
-                    $('#webcam-feed').show();
-                    $('#camera-status').text('Camera is on');
-                } else {
-                    $('#webcam-feed').hide();
-                    $('#camera-status').text('Camera is off');
-                }
-                for (var key in data.pin_assignments) {
-                    if (!inputsBeingEdited[key]) $('#' + key).val(data.pin_assignments[key]);
-                }
-                updateButtonsAndLevers(data);
+        function fetchLogs() {
+            $.get('/logs', function (data) {
+                $('#log').html('<pre>' + data + '</pre>');
             });
-            fetchLogs();
-            updateScheduledEvents();
-        }, 1000);
-    });
-</script>
+        }
+
+        function control(action) {
+            $.get('/control/' + action, function () {
+                logMessage(action + ' command sent');
+                $('.button-state').removeClass('active');
+                $('#' + action + ' .button-state').addClass('active');
+                if (action === 'stop') {
+                    setTimeout(function () {
+                        $('.button-state').removeClass('active');
+                    }, 1000);
+                }
+            });
+        }
+
+        function updateVariables() {
+            var spr = $('#spr').val();
+            var delay = $('#delay').val();
+            $.ajax({
+                url: '/update_variables',
+                type: 'POST',
+                contentType: 'application/json',
+                data: JSON.stringify({ spr: spr, delay: delay }),
+                success: function (response) {
+                    logMessage('Variables updated - SPR: ' + spr + ', Delay: ' + delay);
+                }
+            });
+        }
+
+        function updatePins() {
+            var pinAssignments = {};
+            $('#pin-assignments input').each(function () {
+                pinAssignments[this.id] = parseInt($(this).val());
+            });
+            $.ajax({
+                url: '/update_pins',
+                type: 'POST',
+                contentType: 'application/json',
+                data: JSON.stringify(pinAssignments),
+                success: function (response) {
+                    logMessage('Pin assignments updated');
+                }
+            });
+        }
+
+        function updateScheduledEvents() {
+            $.get('/scheduled_events', function (data) {
+                $('#next-open').text(data.next_open);
+                $('#next-close').text(data.next_close);
+                $('#next-light-on').text(data.next_light_on);
+                $('#next-light-off').text(data.next_light_off);
+            });
+        }
+
+        $(document).ready(function () {
+            var inputsBeingEdited = {};
+
+            $('#cw, #ccw, #stop, #toggle_light').click(function () {
+                control(this.id);
+            });
+
+            $('#toggle_camera').click(function () {
+                $.get('/toggle_camera', function () {
+                    logMessage('Camera toggle command sent');
+                });
+            });
+
+            $('#save_variables').click(updateVariables);
+
+            $('#pin-assignments input').change(updatePins);
+
+            $('input[type="text"], input[type="number"]').focus(function () {
+                inputsBeingEdited[this.id] = true;
+            }).blur(function () {
+                inputsBeingEdited[this.id] = false;
+            });
+
+            $('#camera-settings-form').submit(function (e) {
+                e.preventDefault();
+                var formData = $(this).serializeArray();
+                var data = {};
+                $(formData).each(function (index, obj) {
+                    data[obj.name] = parseInt(obj.value);
+                });
+                $.ajax({
+                    url: '/update_camera_settings',
+                    type: 'POST',
+                    contentType: 'application/json',
+                    data: JSON.stringify(data),
+                    success: function (response) {
+                        logMessage('Camera settings updated');
+                        if (response.camera_on) {
+                            $('#toggle_camera .button-state').addClass('active');
+                            $('#video-feed').show();
+                        } else {
+                            $('#toggle_camera .button-state').removeClass('active');
+                            $('#video-feed').hide();
+                        }
+                    }
+                });
+            });
+
+
+            function updateButtonsAndLevers(data) {
+                var openDirection = data.door_open_direction;
+                var closeDirection = openDirection === 'CW' ? 'CCW' : 'CW';
+
+                $('#cw-label').text(openDirection === 'CW' ? 'OPEN (CW)' : 'CLOSE (CW)');
+                $('#ccw-label').text(openDirection === 'CCW' ? 'OPEN (CCW)' : 'CLOSE (CCW)');
+
+                $('#lever-cw-label').text(openDirection === 'CW' ? 'OPEN (CW)' : 'CLOSE (CW)');
+                $('#lever-ccw-label').text(openDirection === 'CCW' ? 'OPEN (CCW)' : 'CLOSE (CCW)');
+
+                var cwPressed = data.lever_cw_pressed;
+                var ccwPressed = data.lever_ccw_pressed;
+
+                $('#lever-cw').toggleClass('open', openDirection === 'CW' && cwPressed)
+                    .toggleClass('closed', openDirection === 'CCW' && cwPressed);
+                $('#lever-ccw').toggleClass('open', openDirection === 'CCW' && ccwPressed)
+                    .toggleClass('closed', openDirection === 'CW' && ccwPressed);
+            }
+
+            function updateStatus() {
+                $.get('/get_status', function (data) {
+                    if (!inputsBeingEdited['spr']) $('#spr').val(data.spr);
+                    if (!inputsBeingEdited['delay']) $('#delay').val(data.delay);
+                    $('#toggle_light .button-state').toggleClass('active', data.light_on);
+                    $('#toggle_camera .button-state').toggleClass('active', data.camera_on);
+                    if (data.camera_on) {
+                        $('#video-feed').show();
+                        $('#video-feed').attr('src', '/video_feed?' + new Date().getTime());
+                    } else {
+                        $('#video-feed').hide();
+                    }
+                    if (!inputsBeingEdited['camera-width']) $('#camera-width').val(data.camera_width);
+                    if (!inputsBeingEdited['camera-height']) $('#camera-height').val(data.camera_height);
+                    if (!inputsBeingEdited['camera-framerate']) $('#camera-framerate').val(data.camera_framerate);
+                    if (!inputsBeingEdited['camera-quality']) $('#camera-quality').val(data.camera_quality);
+                    for (var key in data.pin_assignments) {
+                        if (!inputsBeingEdited[key]) $('#' + key).val(data.pin_assignments[key]);
+                    }
+                    updateButtonsAndLevers(data);
+                });
+                fetchLogs();
+                updateScheduledEvents();
+            }
+
+            setInterval(updateStatus, 1000);
+        });
+    </script>
 </body>
+
 </html>

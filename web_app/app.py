@@ -256,28 +256,44 @@ def run_scheduler():
         time.sleep(60)  # Check every minute
 
 def start_camera_stream():
-    global camera_process, frame_thread
+    global camera_process, frame_thread, camera_on
     if not os.path.exists(fifo_path):
         os.mkfifo(fifo_path)
     
-    cmd = [
-        'libcamera-vid',
-        '-t', '0',
-        '-o', fifo_path,
-        '--inline',
-        '--width', str(camera_width),
-        '--height', str(camera_height),
-        '--framerate', str(camera_framerate),
-        '--codec', 'mjpeg',
-        '--quality', str(camera_quality)
-    ]
-    camera_process = subprocess.Popen(cmd)
-    
-    frame_thread = threading.Thread(target=read_frames)
-    frame_thread.daemon = True
-    frame_thread.start()
-    
-    logging.info("Camera stream started.")
+    try:
+        cmd = [
+            'libcamera-vid',
+            '-t', '0',
+            '-o', fifo_path,
+            '--inline',
+            '--width', str(camera_width),
+            '--height', str(camera_height),
+            '--framerate', str(camera_framerate),
+            '--codec', 'mjpeg',
+            '--quality', str(camera_quality)
+        ]
+        camera_process = subprocess.Popen(cmd, stderr=subprocess.PIPE)
+        
+        # Wait a short time to check if the process fails immediately
+        time.sleep(1)
+        if camera_process.poll() is not None:
+            error_output = camera_process.stderr.read().decode()
+            if "no cameras available" in error_output:
+                logging.error("No camera hardware detected")
+                camera_on = False
+                return False
+        
+        frame_thread = threading.Thread(target=read_frames)
+        frame_thread.daemon = True
+        frame_thread.start()
+        
+        logging.info("Camera stream started successfully.")
+        return True
+        
+    except Exception as e:
+        logging.error(f"Failed to start camera stream: {str(e)}")
+        camera_on = False
+        return False
 
 def stop_camera_stream():
     global camera_process, frame_thread, camera_on
@@ -507,7 +523,9 @@ if __name__ == '__main__':
     scheduler_thread.start()
 
     if camera_on:
-        start_camera_stream()
+        if not start_camera_stream():
+            camera_on = False
+            logging.warning("Camera initialization failed, continuing without camera support")
     
     logging.info("Starting Flask app.")
     app.run(host='0.0.0.0', port=5000, threaded=True)

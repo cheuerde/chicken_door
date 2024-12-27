@@ -16,6 +16,10 @@ import queue
 
 app = Flask(__name__)
 
+# Add watchdog configuration
+app.config['WATCHDOG_ENABLED'] = True
+app.config['WATCHDOG_MAX_SECONDS'] = 30
+
 # Define the log directory and file
 log_dir = os.path.expanduser("~/logs")
 log_file = os.path.join(log_dir, "motor_light_control.log")
@@ -341,6 +345,11 @@ def gen_frames():
             logging.error(f"Error in gen_frames: {str(e)}")
             sleep(0.1)
 
+# Add health check endpoint
+@app.route('/health')
+def health_check():
+    return jsonify({'status': 'healthy'})
+
 @app.route('/')
 def index():
     logging.info("Accessed index page.")
@@ -457,26 +466,6 @@ def update_camera_settings():
     
     return jsonify({'message': 'Camera settings updated', 'camera_on': camera_on})
 
-
-@app.route('/get_status')
-def get_status():
-    logging.debug("Status request received.")
-    return jsonify({
-        'spr': SPR,
-        'delay': delay,
-        'light_on': light_on,
-        'camera_on': camera_on,
-        'camera_width': camera_width,
-        'camera_height': camera_height,
-        'camera_framerate': camera_framerate,
-        'camera_quality': camera_quality,
-        'pin_assignments': PIN_ASSIGNMENTS,
-        'holding_torque': holding_torque,
-        'lever_cw_pressed': lever_cw_line.get_value() == 0,
-        'lever_ccw_pressed': lever_ccw_line.get_value() == 0,
-        'door_open_direction': door_open_direction
-    })
-
 @app.route('/scheduled_events')
 def scheduled_events():
     return jsonify(get_next_scheduled_times())
@@ -490,25 +479,60 @@ def cleanup_resources():
         os.remove(fifo_path)
 
 if __name__ == '__main__':
-    logging.info(f"Starting application with door open direction: {door_open_direction}")
-    
-    initial_slp_state = read_slp_state()
-    logging.info(f"Initial SLP pin state: {initial_slp_state}")
+    while True:
+        try:
+            logging.info(f"Starting application with door open direction: {door_open_direction}")
+            
+            initial_slp_state = read_slp_state()
+            logging.info(f"Initial SLP pin state: {initial_slp_state}")
 
-    set_holding_torque(True)
-    
-    logging.info(f"After initialization: Holding torque is {'enabled' if holding_torque else 'disabled'}, SLP pin state is {read_slp_state()}")
+            set_holding_torque(True)
+            
+            logging.info(f"After initialization: Holding torque is {'enabled' if holding_torque else 'disabled'}, SLP pin state is {read_slp_state()}")
 
-    button_thread = threading.Thread(target=handle_button_presses, daemon=True)
-    button_thread.start()
+            button_thread = threading.Thread(target=handle_button_presses, daemon=True)
+            button_thread.start()
 
-    schedule_door_events()
-    scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
-    scheduler_thread.start()
+            schedule_door_events()
+            scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
+            scheduler_thread.start()
 
-    if camera_on:
-        start_camera_stream()
-    
-    logging.info("Starting Flask app.")
-    app.run(host='0.0.0.0', port=5000, threaded=True)
-
+            if camera_on:
+                start_camera_stream()
+            
+            logging.info("Starting Flask app.")
+            app.run(host='0.0.0.0', port=5000, threaded=True)
+        except Exception as e:
+            logging.error(f"Application crashed: {str(e)}")
+            logging.info("Attempting to restart in 10 seconds...")
+            time.sleep(10)
+            # Release and re-initialize GPIO resources
+            try:
+                cleanup()
+                # Re-initialize GPIO
+                chip = gpiod.Chip('gpiochip0')
+                dir_line = chip.get_line(PIN_ASSIGNMENTS['DIR_PIN'])
+                step_line = chip.get_line(PIN_ASSIGNMENTS['STEP_PIN'])
+                slp_line = chip.get_line(PIN_ASSIGNMENTS['SLP_PIN'])
+                light_line = chip.get_line(PIN_ASSIGNMENTS['LIGHT_PIN'])
+                btn_cw_line = chip.get_line(PIN_ASSIGNMENTS['BTN_CW_PIN'])
+                btn_ccw_line = chip.get_line(PIN_ASSIGNMENTS['BTN_CCW_PIN'])
+                btn_stop_line = chip.get_line(PIN_ASSIGNMENTS['BTN_STOP_PIN'])
+                btn_light_line = chip.get_line(PIN_ASSIGNMENTS['BTN_LIGHT_PIN'])
+                lever_cw_line = chip.get_line(PIN_ASSIGNMENTS['LEVER_CW_PIN'])
+                lever_ccw_line = chip.get_line(PIN_ASSIGNMENTS['LEVER_CCW_PIN'])
+                
+                # Re-request lines
+                dir_line.request(consumer='test', type=gpiod.LINE_REQ_DIR_OUT)
+                step_line.request(consumer='test', type=gpiod.LINE_REQ_DIR_OUT)
+                slp_line.request(consumer='test', type=gpiod.LINE_REQ_DIR_OUT)
+                light_line.request(consumer='test', type=gpiod.LINE_REQ_DIR_OUT)
+                btn_cw_line.request(consumer='test', type=gpiod.LINE_REQ_DIR_IN, flags=gpiod.LINE_REQ_FLAG_BIAS_PULL_UP)
+                btn_ccw_line.request(consumer='test', type=gpiod.LINE_REQ_DIR_IN, flags=gpiod.LINE_REQ_FLAG_BIAS_PULL_UP)
+                btn_stop_line.request(consumer='test', type=gpiod.LINE_REQ_DIR_IN, flags=gpiod.LINE_REQ_FLAG_BIAS_PULL_UP)
+                btn_light_line.request(consumer='test', type=gpiod.LINE_REQ_DIR_IN, flags=gpiod.LINE_REQ_FLAG_BIAS_PULL_UP)
+                lever_cw_line.request(consumer='test', type=gpiod.LINE_REQ_DIR_IN, flags=gpiod.LINE_REQ_FLAG_BIAS_PULL_UP)
+                lever_ccw_line.request(consumer='test', type=gpiod.LINE_REQ_DIR_IN, flags=gpiod.LINE_REQ_FLAG_BIAS_PULL_UP)
+            except Exception as gpio_error:
+                logging.error(f"Failed to reinitialize GPIO: {str(gpio_error)}")
+            continue
